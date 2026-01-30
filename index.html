@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Brain Dump (Stable)</title>
+    <title>Brain Dump (Final Fix)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -39,14 +39,27 @@
             "Other": "bg-slate-500"
         };
 
-        // ★安全装置：壊れたJSONデータを読み込んでも落ちないようにする
-        const safeJSONParse = (key, fallback) => {
+        // ★最重要修正：ロード時にデータを強制整形する（これで落ちない）
+        const loadAndSanitizeMemos = () => {
             try {
-                const item = localStorage.getItem(key);
-                return item ? JSON.parse(item) : fallback;
+                const raw = localStorage.getItem("brain_dump_memos");
+                if (!raw) return [];
+                const parsed = JSON.parse(raw);
+                if (!Array.isArray(parsed)) return [];
+
+                // 全データをチェックし、形が壊れていたら直す
+                return parsed.map(memo => ({
+                    id: memo.id || Date.now(),
+                    text: typeof memo.text === 'string' ? memo.text : "",
+                    title: typeof memo.title === 'string' ? memo.title : "無題",
+                    category: CATEGORY_COLORS[memo.category] ? memo.category : "Other",
+                    // ここがクラッシュの主犯。必ず配列に変換する
+                    tags: Array.isArray(memo.tags) ? memo.tags : [],
+                    timestamp: memo.timestamp || "--:--"
+                }));
             } catch (e) {
-                console.error(`Error parsing ${key}:`, e);
-                return fallback;
+                console.error("Data corruption detected, resetting list.", e);
+                return [];
             }
         };
 
@@ -54,10 +67,16 @@
             // --- State ---
             const [hasKey, setHasKey] = useState(() => !!localStorage.getItem("gemini_api_key_brain"));
             const [apiKey, setApiKey] = useState(() => localStorage.getItem("gemini_api_key_brain") || "");
-            const [availableModels, setAvailableModels] = useState(() => safeJSONParse("brain_available_models", []));
-            const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem("brain_selected_model") || "");
-            const [memos, setMemos] = useState(() => safeJSONParse("brain_dump_memos", []));
             
+            // 安全なローダーを使用
+            const [memos, setMemos] = useState(loadAndSanitizeMemos);
+            
+            // モデルリストの読み込み
+            const [availableModels, setAvailableModels] = useState(() => {
+                try { return JSON.parse(localStorage.getItem("brain_available_models") || "[]"); } catch { return []; }
+            });
+            const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem("brain_selected_model") || "");
+
             const [inputText, setInputText] = useState("");
             const [isProcessing, setIsProcessing] = useState(false);
             
@@ -78,7 +97,7 @@
             // --- Logic ---
             const filteredMemos = useMemo(() => {
                 return memos.filter(memo => {
-                    // ★安全対策：tagsが配列でない場合に備える
+                    // ★防御的プログラミング：念のためここでもチェック
                     const tags = Array.isArray(memo.tags) ? memo.tags : [];
                     
                     if (activeTag && !tags.includes(activeTag) && memo.category !== activeTag) return false;
@@ -131,15 +150,16 @@
                     const jsonStr = rawText.replace(/```json|```/g, "").trim();
                     const parsed = JSON.parse(jsonStr);
                     
-                    // ★ここでデータを強制的に整形（バグ防止の壁）
+                    // ★APIの返り値も厳密にサニタイズ
                     return {
                         title: typeof parsed.title === 'string' ? parsed.title : text.slice(0, 15),
                         category: CATEGORY_COLORS[parsed.category] ? parsed.category : "Other",
-                        tags: Array.isArray(parsed.tags) ? parsed.tags : [] // 必ず配列にする
+                        tags: Array.isArray(parsed.tags) ? parsed.tags : [] 
                     };
 
                 } catch (e) {
                     console.error("AI Error:", e);
+                    // エラー時のフォールバック
                     return { title: text.slice(0, 15) + "...", category: "Other", tags: ["未分類"] };
                 }
             };
@@ -157,7 +177,7 @@
                 const newMemo = {
                     id: Date.now(),
                     text: rawText,
-                    ...analyzed, // 整形済みデータを使う
+                    ...analyzed, // サニタイズ済み
                     timestamp: new Date().toLocaleTimeString('ja-JP', {hour: '2-digit', minute:'2-digit'}),
                 };
                 
@@ -230,7 +250,7 @@
                             <div className="flex flex-col">
                                 {filteredMemos.map((memo) => {
                                     const barColor = CATEGORY_COLORS[memo.category] || "bg-slate-500";
-                                    // ★安全対策：表示時も配列チェックを行う
+                                    // ★超安全策：ここでも配列チェック（二重防衛）
                                     const tags = Array.isArray(memo.tags) ? memo.tags : [];
                                     
                                     return (
