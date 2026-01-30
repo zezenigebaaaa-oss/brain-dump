@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Brain Dump (Fixed)</title>
+    <title>Brain Dump (Stable)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
@@ -39,7 +39,7 @@
             "Other": "bg-slate-500"
         };
 
-        // 安全にLocalStorageを読み込むヘルパー関数（バグ回避の要）
+        // ★安全装置：壊れたJSONデータを読み込んでも落ちないようにする
         const safeJSONParse = (key, fallback) => {
             try {
                 const item = localStorage.getItem(key);
@@ -51,29 +51,24 @@
         };
 
         const App = () => {
-            // --- State Initialization ---
+            // --- State ---
             const [hasKey, setHasKey] = useState(() => !!localStorage.getItem("gemini_api_key_brain"));
             const [apiKey, setApiKey] = useState(() => localStorage.getItem("gemini_api_key_brain") || "");
-            
             const [availableModels, setAvailableModels] = useState(() => safeJSONParse("brain_available_models", []));
             const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem("brain_selected_model") || "");
-
             const [memos, setMemos] = useState(() => safeJSONParse("brain_dump_memos", []));
+            
             const [inputText, setInputText] = useState("");
             const [isProcessing, setIsProcessing] = useState(false);
             
-            // Search & Filter
             const [searchQuery, setSearchQuery] = useState("");
             const [activeTag, setActiveTag] = useState(null); 
             const [isSearchOpen, setIsSearchOpen] = useState(false);
 
             // --- Effects ---
             useEffect(() => { localStorage.setItem("brain_dump_memos", JSON.stringify(memos)); }, [memos]);
-            
-            // アイコン初期化
             useEffect(() => { if (window.lucide) window.lucide.createIcons(); }, [hasKey, memos, isSearchOpen, activeTag]);
 
-            // 初回起動時のモデル取得（API節約ロジック）
             useEffect(() => {
                 if (hasKey && apiKey && availableModels.length === 0) {
                     fetchModels(apiKey);
@@ -83,16 +78,17 @@
             // --- Logic ---
             const filteredMemos = useMemo(() => {
                 return memos.filter(memo => {
-                    // タグ/カテゴリフィルター
-                    if (activeTag && !memo.tags.includes(activeTag) && memo.category !== activeTag) return false;
+                    // ★安全対策：tagsが配列でない場合に備える
+                    const tags = Array.isArray(memo.tags) ? memo.tags : [];
                     
-                    // 文字列検索
+                    if (activeTag && !tags.includes(activeTag) && memo.category !== activeTag) return false;
+                    
                     if (searchQuery) {
                         const q = searchQuery.toLowerCase();
                         return (
-                            memo.title.toLowerCase().includes(q) ||
-                            memo.text.toLowerCase().includes(q) ||
-                            (memo.tags && memo.tags.some(t => t.toLowerCase().includes(q)))
+                            (memo.title || "").toLowerCase().includes(q) ||
+                            (memo.text || "").toLowerCase().includes(q) ||
+                            tags.some(t => String(t).toLowerCase().includes(q))
                         );
                     }
                     return true;
@@ -103,7 +99,7 @@
                 try {
                     const res = await fetch(`https://generativelanguage.googleapis.com/${API_VERSION}/models?key=${key}`);
                     const data = await res.json();
-                    if (!res.ok) return; // エラー時は何もしない（既存リストがあればそれを使う）
+                    if (!res.ok) return;
                     
                     const models = data.models
                         .filter(m => m.supportedGenerationMethods.includes("generateContent"))
@@ -118,7 +114,7 @@
                         setSelectedModel(best);
                         localStorage.setItem("brain_selected_model", best);
                     }
-                } catch (e) { console.error("Model fetch failed", e); }
+                } catch (e) { console.error(e); }
             };
 
             const processMemoWithAI = async (text) => {
@@ -133,9 +129,17 @@
                     
                     const rawText = data.candidates[0].content.parts[0].text;
                     const jsonStr = rawText.replace(/```json|```/g, "").trim();
-                    return JSON.parse(jsonStr);
+                    const parsed = JSON.parse(jsonStr);
+                    
+                    // ★ここでデータを強制的に整形（バグ防止の壁）
+                    return {
+                        title: typeof parsed.title === 'string' ? parsed.title : text.slice(0, 15),
+                        category: CATEGORY_COLORS[parsed.category] ? parsed.category : "Other",
+                        tags: Array.isArray(parsed.tags) ? parsed.tags : [] // 必ず配列にする
+                    };
+
                 } catch (e) {
-                    console.error("AI Gen Error", e);
+                    console.error("AI Error:", e);
                     return { title: text.slice(0, 15) + "...", category: "Other", tags: ["未分類"] };
                 }
             };
@@ -146,17 +150,17 @@
                 setInputText("");
                 setIsProcessing(true);
                 
-                // 検索リセット
                 setSearchQuery(""); setActiveTag(null); setIsSearchOpen(false);
 
                 const analyzed = await processMemoWithAI(rawText);
+                
                 const newMemo = {
                     id: Date.now(),
                     text: rawText,
-                    ...analyzed,
-                    tags: analyzed.tags || [], // 安全策
+                    ...analyzed, // 整形済みデータを使う
                     timestamp: new Date().toLocaleTimeString('ja-JP', {hour: '2-digit', minute:'2-digit'}),
                 };
+                
                 setMemos(prev => [newMemo, ...prev]);
                 setIsProcessing(false);
             };
@@ -166,7 +170,7 @@
                 if(confirm("削除しますか？")) setMemos(prev => prev.filter(m => m.id !== id));
             };
 
-            // --- Render: Login ---
+            // --- Render ---
             if (!hasKey) return (
                 <div className="h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-slate-50">
                     <h1 className="text-3xl font-bold mb-8 tracking-tight text-teal-400">Brain Dump</h1>
@@ -175,13 +179,11 @@
                 </div>
             );
 
-            // --- Render: App ---
             return (
                 <div className="h-[100dvh] w-full flex flex-col bg-slate-950 relative overflow-hidden">
                     
                     {/* Header */}
                     <header className="glass-header border-b border-slate-800 absolute top-0 w-full z-20 flex flex-col transition-all duration-300">
-                        {/* Top Row: Title & Search */}
                         <div className="h-14 flex justify-between items-center px-4">
                             {!isSearchOpen ? (
                                 <div className="flex items-center gap-2" onClick={() => setActiveTag(null)}>
@@ -191,32 +193,21 @@
                             ) : (
                                 <div className="flex-1 flex items-center gap-2 mr-2">
                                     <i data-lucide="search" className="w-4 h-4 text-slate-500"></i>
-                                    <input 
-                                        autoFocus
-                                        value={searchQuery}
-                                        onChange={e => setSearchQuery(e.target.value)}
-                                        placeholder="検索..." 
-                                        className="bg-transparent text-white w-full outline-none placeholder:text-slate-600"
-                                    />
+                                    <input autoFocus value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="検索..." className="bg-transparent text-white w-full outline-none placeholder:text-slate-600" />
                                 </div>
                             )}
-
                             <div className="flex gap-4 items-center">
-                                {/* Search Toggle Button */}
                                 <button onClick={() => { setIsSearchOpen(!isSearchOpen); if(isSearchOpen) setSearchQuery(""); }} className={`transition-colors ${isSearchOpen ? 'text-teal-400' : 'text-slate-400 hover:text-white'}`}>
                                     {isSearchOpen ? <i data-lucide="x" className="w-5 h-5"></i> : <i data-lucide="search" className="w-5 h-5"></i>}
                                 </button>
-                                {/* Model Selector */}
                                 <div className="relative group">
                                     <i data-lucide="settings-2" className="w-5 h-5 text-slate-400 group-hover:text-white"></i>
                                     <select onChange={e => {setSelectedModel(e.target.value); localStorage.setItem("brain_selected_model", e.target.value);}} value={selectedModel} className="absolute inset-0 opacity-0 cursor-pointer">
-                                        {availableModels.length > 0 ? availableModels.map(m => <option key={m} value={m}>{m}</option>) : <option>Loading...</option>}
+                                        {availableModels.length > 0 ? availableModels.map(m => <option key={m} value={m}>{m}</option>) : <option>Model...</option>}
                                     </select>
                                 </div>
                             </div>
                         </div>
-
-                        {/* Filter Bar (Visible only when activeTag is set) */}
                         {activeTag && (
                             <div className="h-8 bg-teal-900/30 flex items-center px-4 gap-2 text-xs border-t border-slate-800/50">
                                 <span className="text-teal-400 font-bold">Filter:</span>
@@ -239,9 +230,11 @@
                             <div className="flex flex-col">
                                 {filteredMemos.map((memo) => {
                                     const barColor = CATEGORY_COLORS[memo.category] || "bg-slate-500";
+                                    // ★安全対策：表示時も配列チェックを行う
+                                    const tags = Array.isArray(memo.tags) ? memo.tags : [];
+                                    
                                     return (
                                         <div key={memo.id} className="relative pl-5 pr-4 py-4 border-b border-slate-800/50 hover:bg-slate-900/50 transition-colors group">
-                                            {/* Colored Bar */}
                                             <div className={`absolute left-0 top-0 bottom-0 w-1.5 ${barColor}`}></div>
                                             
                                             <div className="flex justify-between items-start mb-1">
@@ -253,12 +246,10 @@
                                             
                                             <div className="flex justify-between items-center">
                                                 <div className="flex gap-2 flex-wrap">
-                                                    {/* Clickable Category */}
                                                     <span onClick={() => setActiveTag(memo.category)} className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700 hover:border-teal-500 hover:text-teal-400 cursor-pointer transition-colors">
                                                         {memo.category}
                                                     </span>
-                                                    {/* Clickable Tags */}
-                                                    {memo.tags && memo.tags.map((tag, i) => (
+                                                    {tags.map((tag, i) => (
                                                         <span key={i} onClick={() => setActiveTag(tag)} className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700 hover:border-teal-500 hover:text-teal-400 cursor-pointer transition-colors">
                                                             #{tag}
                                                         </span>
